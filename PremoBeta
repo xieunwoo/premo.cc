@@ -1,0 +1,271 @@
+-- Your services and variables
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+local TargetLocked = nil
+local predictionFactor = 0.1356875
+local pingCompensation = 0.05
+local AimbotEnabled = false
+local silentAimbotEnabled = false
+local ESPEnabled = true
+local TeamCheck = false
+
+-- ViPerWaRe Startup Animation
+local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+local StartupText = Instance.new("TextLabel", ScreenGui)
+StartupText.Size = UDim2.new(1, 0, 1, 0)
+StartupText.BackgroundTransparency = 1
+StartupText.Text = "premo.cc"
+StartupText.Font = Enum.Font.Arcade
+StartupText.TextSize = 70
+StartupText.TextColor3 = Color3.fromRGB(255, 0, 0)
+StartupText.TextStrokeTransparency = 0
+StartupText.TextScaled = true
+
+local fadeIn = TweenService:Create(StartupText, TweenInfo.new(1.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {TextTransparency = 0})
+local fadeOut = TweenService:Create(StartupText, TweenInfo.new(1.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {TextTransparency = 1})
+
+fadeIn:Play()
+task.wait(3)
+fadeOut:Play()
+task.wait(1.5)
+StartupText:Destroy()
+
+-- New Notification System
+local Notification = Instance.new("ScreenGui")
+Notification.Name = "Notification"
+Notification.Parent = game.CoreGui
+Notification.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local Holder = Instance.new("Frame")
+local UIListLayout = Instance.new("UIListLayout")
+Holder.Name = "Holder"
+Holder.Parent = Notification
+Holder.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Holder.BackgroundTransparency = 1
+Holder.Position = UDim2.new(1, -10, 0, 10)
+Holder.AnchorPoint = Vector2.new(1, 0)
+Holder.Size = UDim2.new(0, 243, 0, 240)
+
+UIListLayout.Parent = Holder
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 4)
+
+local function createNotificationTemplate(text, duration)
+    local Template = Instance.new("Frame")
+    local ColorBar = Instance.new("Frame")
+    local TextLabel = Instance.new("TextLabel")
+
+    Template.Name = text
+    Template.Parent = Holder
+    Template.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    Template.BorderSizePixel = 0
+    Template.Size = UDim2.new(1, 0, 0, 22)
+    Template.Transparency = 1
+
+    ColorBar.Name = "ColorBar"
+    ColorBar.Parent = Template
+    ColorBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    ColorBar.BorderSizePixel = 0
+    ColorBar.Size = UDim2.new(0, 2, 0, 22)
+    ColorBar.Transparency = 1
+
+    TextLabel.Parent = Template
+    TextLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.BorderSizePixel = 0
+    TextLabel.Position = UDim2.new(0, 8, 0, 0)
+    TextLabel.Size = UDim2.new(1, -10, 0, 22)
+    TextLabel.Font = Enum.Font.Code
+    TextLabel.Text = text .. " [" .. duration .. "s]"
+    TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TextLabel.TextSize = 12
+    TextLabel.TextStrokeTransparency = 0
+    TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TextLabel.Transparency = 1
+
+    return Template, ColorBar, TextLabel
+end
+
+function notify(text, time)
+    if time <= 0 then
+        warn("Notification duration must be greater than 0")
+        return
+    end
+
+    local Template, ColorBar, TextLabel = createNotificationTemplate(text, time)
+
+    local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local fadeInGoal = {Transparency = 0}
+    local fadeOutGoal = {Transparency = 1}
+
+    local sizeTween = TweenService:Create(Template, tweenInfo, fadeInGoal)
+    local colorBarTween = TweenService:Create(ColorBar, tweenInfo, fadeInGoal)
+    local textTween = TweenService:Create(TextLabel, tweenInfo, fadeInGoal)
+
+    sizeTween:Play()
+    colorBarTween:Play()
+    textTween:Play()
+
+    local elapsed = 0
+    local updateConnection
+
+    updateConnection =
+        RunService.RenderStepped:Connect(
+        function(dt)
+            elapsed = elapsed + dt
+            local remainingTime = math.max(0, time - elapsed)
+            TextLabel.Text = text .. " [" .. string.format("%.1f", remainingTime) .. "s]"
+
+            if remainingTime <= 0 then
+                updateConnection:Disconnect()
+                local fadeOutTween = TweenService:Create(Template, tweenInfo, fadeOutGoal)
+                fadeOutTween:Play()
+                fadeOutTween.Completed:Wait()
+                Template:Destroy()
+            end
+        end
+    )
+end
+
+-- Dot Indicator for Locked Target
+local function createDotIndicator()
+    local dot = Instance.new("BillboardGui")
+    dot.Size = UDim2.new(0, 3, 0, 3)
+    dot.AlwaysOnTop = true
+    dot.Adornee = nil
+
+    local frame = Instance.new("Frame", dot)
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    frame.BorderSizePixel = 4
+    frame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+
+    local dotCorner = Instance.new("UICorner", frame)
+    dotCorner.CornerRadius = UDim.new(0, 4)
+
+    return dot
+end
+
+local TargetDot = createDotIndicator()
+TargetDot.Parent = game.CoreGui
+
+-- Closest enemy
+local function getClosestEnemy()
+    local ClosestPlayer = nil
+    local ShortestDistance = math.huge
+    local ScreenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
+            local HeadPos, OnScreen = Camera:WorldToViewportPoint(player.Character.Head.Position)
+            if OnScreen then
+                local Distance = (Vector2.new(HeadPos.X, HeadPos.Y) - ScreenCenter).Magnitude
+                if Distance < ShortestDistance then
+                    ShortestDistance = Distance
+                    ClosestPlayer = player
+                end
+            end
+        end
+    end
+    return ClosestPlayer
+end
+
+-- Bullet Travel Time
+local function getBulletTravelTime(target)
+    local bulletSpeed = 500
+    local distance = (Camera.CFrame.Position - target.Position).Magnitude
+    return distance / bulletSpeed
+end
+
+-- Silent Aim Hook
+local OldIndex
+OldIndex = hookmetamethod(game, "__index", function(Self, Key)
+    if Self == LocalPlayer:GetMouse() and Key == "Hit" and silentAimbotEnabled and TargetLocked then
+        if TargetLocked.Character and TargetLocked.Character:FindFirstChild("HumanoidRootPart") then
+            local root = TargetLocked.Character.HumanoidRootPart
+            local predictedPos = root.Position + (root.Velocity * predictionFactor)
+            return CFrame.new(predictedPos)
+        end
+    end
+    return OldIndex(Self, Key)
+end)
+
+-- Aimbot + Silent Aim Logic
+RunService.RenderStepped:Connect(function()
+    if AimbotEnabled and TargetLocked and TargetLocked.Character and TargetLocked.Character:FindFirstChild("Head") then
+        local head = TargetLocked.Character.Head
+        local root = TargetLocked.Character:FindFirstChild("HumanoidRootPart")
+
+        if root then
+            local travelTime = getBulletTravelTime(head)
+            local predictedPosition = head.Position + (root.Velocity * (predictionFactor + pingCompensation + travelTime))
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, predictedPosition)
+            TargetDot.Adornee = head
+        end
+    else
+        TargetDot.Adornee = nil
+    end
+end)
+
+-- Aimbot Button with Image
+local ToggleAimbot = Instance.new("ImageButton", ScreenGui)
+ToggleAimbot.Size = UDim2.new(0, 80, 0, 80)
+ToggleAimbot.Position = UDim2.new(0.85, 0, 0.7, 0)
+ToggleAimbot.BackgroundColor3 = Color3.fromRGB(50, 50, 50)  -- Sets the color to gray
+ToggleAimbot.BackgroundTransparency = 0.2  -- Sets the opacity to 20% transparent (80% opaque)
+
+-- Set your image here (replace with your image ID)
+ToggleAimbot.Image = "rbxassetid://127085603530636"
+
+local buttonCorner = Instance.new("UICorner", ToggleAimbot)
+buttonCorner.CornerRadius = UDim.new(0, 10)
+
+-- Draggable Logic
+local function makeDraggable(button)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = button.Position
+        end
+    end)
+
+    button.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            button.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+makeDraggable(ToggleAimbot)
+
+-- Aimbot Toggle
+ToggleAimbot.MouseButton1Click:Connect(function()
+    AimbotEnabled = not AimbotEnabled
+    silentAimbotEnabled = AimbotEnabled
+
+    if AimbotEnabled then
+        TargetLocked = getClosestEnemy()        
+
+        if TargetLocked then
+            notify("Locked: @" .. TargetLocked.Name, 5)
+        end
+    else
+        TargetLocked = nil       
+    end
+end)
